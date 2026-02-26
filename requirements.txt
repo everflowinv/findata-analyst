@@ -1,0 +1,2 @@
+edgartools>=5.17.1
+pandas>=2.0.0
