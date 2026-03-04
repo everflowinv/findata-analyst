@@ -49,6 +49,12 @@ You must use iterative logic to answer the user's question:
 
 ### Commands Syntax
 
+#### 0. Health Check (Recommended Before First Use)
+Use this to verify environment, EDGAR identity, and SEC connectivity.
+```bash
+bash skills/findata-analyst/run.sh self-test --ticker [TICKER]
+```
+
 #### 1. Fetch Latest 8-K Filings (News & Events)
 Use to answer questions about recent corporate events, earnings releases, or changes in management.
 ```bash
@@ -92,6 +98,15 @@ bash skills/findata-analyst/run.sh facts --ticker [TICKER] --concept [EXACT_CONC
 ```
 
 ---
+
+### JSON Output Mode (for deterministic parsing)
+
+For machine-consumable output, add global `--json` before the subcommand:
+```bash
+bash skills/findata-analyst/run.sh --json facts --ticker MSFT --concept us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax --form 10-K --limit 3
+bash skills/findata-analyst/run.sh --json financials --ticker AAPL --form 10-K --statement income --limit 1
+bash skills/findata-analyst/run.sh --json self-test --ticker AAPL
+```
 
 ### Output Formatting Rules (Mandatory)
 
