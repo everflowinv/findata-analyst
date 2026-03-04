@@ -1,5 +1,12 @@
+from edgar import set_identity, configure_http
+set_identity("Everflow <everflow@example.com>")
+configure_http(use_system_certs=True)
+
 #!/usr/bin/env python3
 import argparse
+from edgar import configure_http, set_identity
+configure_http(verify_ssl=False)
+set_identity('Everflow <everflow@example.com>')
 import sys
 import os
 import pandas as pd
