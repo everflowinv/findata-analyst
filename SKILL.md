@@ -32,6 +32,13 @@ You MUST use your terminal/bash execution tool to run the following exact comman
 ⚠️ **CRITICAL: NO HALLUCINATIONS.** 
 You are STRICTLY FORBIDDEN from inventing numbers, policies, or financial metrics. Every single number and qualitative statement you provide MUST be retrieved directly from the `edgartools` outputs. If the tool does not return the data, say you cannot find it. ALWAYS cite your source (e.g., "According to the latest 10-K...").
 
+⚠️ **CRITICAL: FACTS YEAR INTERPRETATION RULE (HIGHEST PRIORITY).**
+When using `facts` output:
+- Treat `period_end + numeric_value + unit` as the source of truth.
+- Treat `fiscal_year_raw` as metadata only (can be wrong/misaligned in some filings).
+- If `year_mismatch=True`, you MUST NOT narrate conclusions by `fiscal_year_raw` only.
+- In final answers, anchor each metric to `period_end` date explicitly.
+
 You must use iterative logic to answer the user's question:
 1. **Identify Tickers:** Extract company names from the prompt and map them to their stock tickers (e.g., Affirm -> AFRM, AJG -> AJG).
 2. **Determine the Command:** Decide what data you need to answer the question.
@@ -85,6 +92,32 @@ bash skills/findata-analyst/run.sh facts --ticker [TICKER] --concept [EXACT_CONC
 ```
 
 ---
+
+### Output Formatting Rules (Mandatory)
+
+For any answer that includes values from `facts`:
+1. Use this sentence pattern:
+   - "As of `YYYY-MM-DD` (`period_end`), `[concept/metric]` was `[numeric_value] [unit]`."
+2. If `year_mismatch=True` appears in any row used in your answer, append:
+   - "Note: filing metadata year (`fiscal_year_raw`) is inconsistent with `period_end`; interpretation is based on `period_end`."
+3. Never aggregate or label years solely by `fiscal_year_raw`.
+
+### Forbidden Behaviors (Mandatory)
+
+- Do NOT present multiple different `period_end` rows as if they belong to the same fiscal year only because `fiscal_year_raw` matches.
+- Do NOT compute YoY/CAGR unless the compared rows are explicitly identified by `period_end`.
+- Do NOT claim accounting policy details unless a `read-item` or `search-text` snippet is shown.
+- Do NOT omit source context; every quantitative claim must include ticker + form + period reference.
+
+### Minimum Self-Check Before Final Answer
+
+Before replying, verify all 4 items:
+1. Correct ticker(s) and form(s) were queried.
+2. Numbers are tied to `period_end` (not only fiscal year labels).
+3. Any `year_mismatch=True` rows are disclosed with a caution note.
+4. Source citation includes command context (e.g., latest 10-K / Form 4 / 8-K snippet).
+
+If any item fails, do NOT guess. State what is missing and run another command.
 
 ### Qualitative Workflow Examples
 

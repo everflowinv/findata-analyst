@@ -1,26 +1,45 @@
-from edgar import set_identity, configure_http
-set_identity("Everflow <everflow@example.com>")
-configure_http(use_system_certs=True)
-
 #!/usr/bin/env python3
 import argparse
-from edgar import configure_http, set_identity
-configure_http(verify_ssl=False)
-set_identity('Everflow <everflow@example.com>')
-import sys
 import os
-import pandas as pd
-from edgar import Company, set_identity
+import sys
 
-pd.set_option('display.max_rows', None)
-pd.set_option('display.max_columns', None)
-pd.set_option('display.width', 2000)
+import pandas as pd
+from edgar import Company, configure_http, set_identity
+
+# Initialize Edgar HTTP settings exactly once before any API calls.
+configure_http(use_system_certs=True)
 
 if "EDGAR_IDENTITY" in os.environ:
     set_identity(os.environ["EDGAR_IDENTITY"])
 else:
     print("WARNING: EDGAR_IDENTITY environment variable is not set. SEC requires a valid User-Agent.", file=sys.stderr)
     set_identity("OpenClaw_Agent <bot@openclaw.ai>")
+
+pd.set_option('display.max_rows', None)
+pd.set_option('display.max_columns', None)
+pd.set_option('display.width', 2000)
+
+def _render_statement(financials_obj, attr_name, label):
+    print(f"\n--- {label} ---")
+    try:
+        stmt = getattr(financials_obj, attr_name, None)
+        if stmt is None:
+            print(f"  [{label} not available]")
+            return
+        if callable(stmt):
+            stmt = stmt()
+        if stmt is None:
+            print(f"  [{label} not available]")
+            return
+        if hasattr(stmt, 'to_dataframe') and callable(stmt.to_dataframe):
+            print(stmt.to_dataframe().to_string())
+        elif isinstance(stmt, pd.DataFrame):
+            print(stmt.to_string())
+        else:
+            print(str(stmt))
+    except Exception as e:
+        print(f"  [Error rendering {label.lower()}: {e}]")
+
 
 def get_financials(args):
     c = Company(args.ticker)
@@ -34,17 +53,11 @@ def get_financials(args):
             obj = f.obj()
             if hasattr(obj, 'financials') and obj.financials:
                 if args.statement in ['income', 'all']:
-                    print("\n--- Income Statement ---")
-                    try: print(obj.financials.income_statement.to_dataframe().to_string())
-                    except Exception as e: print(f"  [Error rendering income statement: {e}]")
+                    _render_statement(obj.financials, 'income_statement', 'Income Statement')
                 if args.statement in ['balance', 'all']:
-                    print("\n--- Balance Sheet ---")
-                    try: print(obj.financials.balance_sheet.to_dataframe().to_string())
-                    except Exception as e: print(f"  [Error rendering balance sheet: {e}]")
+                    _render_statement(obj.financials, 'balance_sheet', 'Balance Sheet')
                 if args.statement in ['cash', 'all']:
-                    print("\n--- Cash Flow Statement ---")
-                    try: print(obj.financials.cash_flow_statement.to_dataframe().to_string())
-                    except Exception as e: print(f"  [Error rendering cash flow: {e}]")
+                    _render_statement(obj.financials, 'cash_flow_statement', 'Cash Flow Statement')
             else:
                 print("Financials object not found or empty for this filing.")
         except Exception as e:
@@ -73,28 +86,42 @@ def get_facts(args):
     if not facts:
         print("No facts found.")
         return
+
     df = facts.to_dataframe()
-    concept_df = df[df['concept'] == args.concept]
+    concept_df = df[df['concept'] == args.concept].copy()
     if concept_df.empty:
         print(f"Concept '{args.concept}' not found for {args.ticker}. Try using 'search-concepts' first.")
         return
-    
-    # In edgartools EntityFacts, period_type is useful (instant or duration)
-    # fiscal_year and fiscal_period help determine Q1/Q2/Q3/FY
-    # form isn't directly in this dataframe usually, but let's see
-    
-    # Let's drop duplicates by period_end to get a clean timeline
+
+    # Normalize period_end and derive canonical year from period_end (source of truth)
+    concept_df['period_end'] = pd.to_datetime(concept_df['period_end'], errors='coerce')
+    concept_df = concept_df.dropna(subset=['period_end'])
+    concept_df['derived_year'] = concept_df['period_end'].dt.year
+
+    # Keep raw fiscal metadata for auditability
+    if 'fiscal_year' in concept_df.columns:
+        concept_df['fiscal_year_raw'] = pd.to_numeric(concept_df['fiscal_year'], errors='coerce')
+        concept_df['year_mismatch'] = concept_df['fiscal_year_raw'].notna() & (concept_df['fiscal_year_raw'] != concept_df['derived_year'])
+    else:
+        concept_df['fiscal_year_raw'] = pd.NA
+        concept_df['year_mismatch'] = False
+
+    # Annual preference for 10-K style requests: prefer FY rows when available; otherwise fall back.
+    if args.form == '10-K' and 'fiscal_period' in concept_df.columns:
+        fy_df = concept_df[concept_df['fiscal_period'] == 'FY']
+        if not fy_df.empty:
+            concept_df = fy_df
+
+    # Deduplicate by period_end after all filters, keep the latest row for each date.
     concept_df = concept_df.sort_values(by=['period_end']).drop_duplicates(subset=['period_end'], keep='last')
     concept_df = concept_df.sort_values(by='period_end', ascending=False)
-    
-    # Filter for annual if form 10-K requested (roughly 'FY' or period_type 'duration' with ~365 days)
-    if args.form == '10-K':
-        concept_df = concept_df[concept_df['fiscal_period'] == 'FY']
-        
     concept_df = concept_df.head(args.limit)
-    
+
     print(f"\nTime Series for concept '{args.concept}' ({args.ticker}):")
-    display_cols = ['period_end', 'fiscal_year', 'fiscal_period', 'numeric_value', 'unit']
+    concept_df['period_end'] = concept_df['period_end'].dt.date.astype(str)
+
+    display_cols = ['period_end', 'derived_year', 'fiscal_year_raw', 'fiscal_period', 'numeric_value', 'unit', 'year_mismatch']
+    display_cols = [c for c in display_cols if c in concept_df.columns]
     print(concept_df[display_cols].to_string(index=False))
 
 def list_filings(args):
@@ -103,9 +130,23 @@ def list_filings(args):
     if len(filings) == 0:
         print(f"No filings found for {args.ticker}.")
         return
+
     df = filings.head(args.limit).to_pandas()
+
+    # Compatibility across edgartools versions.
+    if 'report_date' not in df.columns and 'reportDate' in df.columns:
+        df['report_date'] = df['reportDate']
+    if 'accession_no' not in df.columns and 'accession_number' in df.columns:
+        df['accession_no'] = df['accession_number']
+
+    desired_cols = ['form', 'filing_date', 'report_date', 'accession_no']
+    available_cols = [c for c in desired_cols if c in df.columns]
+
     print(f"\nRecent Filings for {args.ticker}:")
-    print(df[['form', 'filing_date', 'report_date', 'accession_no']].to_string(index=False))
+    if available_cols:
+        print(df[available_cols].to_string(index=False))
+    else:
+        print(df.to_string(index=False))
 
 def get_eight_k(args):
     c = Company(args.ticker)
