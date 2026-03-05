@@ -1,151 +1,184 @@
 ---
 name: findata-analyst
-description: SEC Financial Data Analyst skill. Retrieves financial statements, searches XBRL concepts, fetches historical data, parses 8-K/Form 4, and performs qualitative text search within specific filings (e.g., Business Models, Depreciation policies) using edgartools.
----
-# Financial Data Analyst Skill
-
-## Setup & Installation
-
-⚠️ **CRITICAL: Installation Location**
-Do NOT install this skill in the global `node_modules` directory. You MUST clone/install it directly into your local OpenClaw workspace (`~/.openclaw/workspace/skills/`).
-
-**Configuration:**
-Set your SEC Edgar identity (Required by SEC API to avoid rate limits/bans):
-`export EDGAR_IDENTITY="Your Name <your.email@example.com>"`
-
-**That's it!** The skill is fully auto-bootstrapping. The first time the Agent executes the `run.sh` command, it will automatically create an isolated virtual environment and install everything needed (`edgartools` and `pandas`).
-
+description: SEC Financial Data Analyst skill. Retrieves financial statements, searches XBRL concepts, fetches historical data, parses 8-K/Form 4, calculates ratios, compares companies, and performs qualitative text search within SEC filings using edgartools. Supports natural language queries via --ask.
 ---
 
-## When to use this skill
-Use this skill when a user asks complex financial or qualitative questions requiring data from SEC filings. Examples:
-- **Corporate Events/News:** "Affirm 最近几个 8-K 讲了什么？"
-- **Insider Trading:** "Affirm 最近三个月的高管增减持明细"
-- **Margins & Ratios:** "Nvidia 和 Broadcom 哪个 GPM 高?"
-- **Historical Metrics:** "Microsoft 每个 segment 过去三年的收入增速是多少?"
-- **Qualitative Research:** "AJG 的商业模式是怎么样的？", "Amazon 和 Meta 对服务器的折旧年限有什么区别？"
+# Financial Data Analyst Skill v2
 
-## How to use this skill
-⚠️ **AGENT INSTRUCTION: DO NOT write or execute your own Python code to fetch data.** 
-You MUST use your terminal/bash execution tool to run the following exact commands to interact with the Python backend.
+⚠️ **CRITICAL: NO HALLUCINATIONS** — Every number must come from command output. If the tool doesn't return data, say so.
+⚠️ **CRITICAL: EXECUTION RULE** — Always run through `bash skills/findata-analyst/run.sh ...`. Do NOT write ad-hoc Python.
 
-⚠️ **CRITICAL: NO HALLUCINATIONS.** 
-You are STRICTLY FORBIDDEN from inventing numbers, policies, or financial metrics. Every single number and qualitative statement you provide MUST be retrieved directly from the `edgartools` outputs. If the tool does not return the data, say you cannot find it. ALWAYS cite your source (e.g., "According to the latest 10-K...").
-
-⚠️ **CRITICAL: FACTS YEAR INTERPRETATION RULE (HIGHEST PRIORITY).**
-When using `facts` output:
-- Treat `period_end + numeric_value + unit` as the source of truth.
-- Treat `fiscal_year_raw` as metadata only (can be wrong/misaligned in some filings).
-- If `year_mismatch=True`, you MUST NOT narrate conclusions by `fiscal_year_raw` only.
-- In final answers, anchor each metric to `period_end` date explicitly.
-
-You must use iterative logic to answer the user's question:
-1. **Identify Tickers:** Extract company names from the prompt and map them to their stock tickers (e.g., Affirm -> AFRM, AJG -> AJG).
-2. **Determine the Command:** Decide what data you need to answer the question.
-3. **Execute & Iterate:** Run the command. If you need more info or the text is truncated, adjust your query (e.g., switch from `read-item` to `search-text` with specific keywords).
-4. **Calculate & Summarize:** Present the final answer clearly to the user, citing the exact SEC filing used.
+## Setup
+```bash
+export EDGAR_IDENTITY="Your Name <your.email@example.com>"  # Required by SEC
+```
+First run auto-creates venv and installs dependencies.
 
 ---
 
-### Commands Syntax
-
-#### 0. Health Check (Recommended Before First Use)
-Use this to verify environment, EDGAR identity, and SEC connectivity.
+## 0) Preflight
 ```bash
-bash skills/findata-analyst/run.sh self-test --ticker [TICKER]
-```
-
-#### 1. Fetch Latest 8-K Filings (News & Events)
-Use to answer questions about recent corporate events, earnings releases, or changes in management.
-```bash
-bash skills/findata-analyst/run.sh eight-k --ticker [TICKER] --limit [NUM]
-```
-
-#### 2. Fetch Insider Trading (Form 4)
-Use to answer questions about executive buys/sells. Automatically prints parsed ownership tables.
-```bash
-bash skills/findata-analyst/run.sh insider --ticker [TICKER] --limit [NUM]
-```
-
-#### 3. Read Specific Qualitative Sections (e.g., Business Models)
-Use this to read a specific "Item" from a 10-K or 10-Q. 
-- "Item 1" = Business Model / Operations overview.
-- "Item 7" = Management's Discussion and Analysis (MD&A).
-- "Item 8" = Financial Statements and Supplementary Data (where accounting policies and notes live).
-```bash
-bash skills/findata-analyst/run.sh read-item --ticker [TICKER] --form [10-K|10-Q] --item "[ITEM_NAME]"
-```
-*Example:* `bash skills/findata-analyst/run.sh read-item --ticker AJG --form 10-K --item "Item 1"`
-
-#### 4. Keyword Search within Filings (e.g., Depreciation Policies)
-Use this when you need highly specific information (like server depreciation, lease terms, specific risks) that is buried deep in a 10-K (usually in the Notes to Financial Statements). It returns a +/- 500 character snippet around every match.
-```bash
-bash skills/findata-analyst/run.sh search-text --ticker [TICKER] --keyword "[KEYWORD]" --form 10-K
-```
-*Example:* `bash skills/findata-analyst/run.sh search-text --ticker AMZN --keyword "useful life"` (or "depreciation")
-
-#### 5. Fetch Standard Financial Statements
-Use this when you need standard figures like Total Revenue, Gross Profit, Net Income.
-```bash
-bash skills/findata-analyst/run.sh financials --ticker [TICKER] --form [10-K|10-Q] --statement [income|balance|cash|all] --limit [NUM]
-```
-
-#### 6. Search Specific XBRL Concepts & Fetch Historical Data
-Use this when looking for non-standard line items like segment data or specific operational metrics. First search the name, then fetch the history.
-```bash
-bash skills/findata-analyst/run.sh search-concepts --ticker [TICKER] --keyword [KEYWORD]
-bash skills/findata-analyst/run.sh facts --ticker [TICKER] --concept [EXACT_CONCEPT_STRING] --form [10-K|10-Q] --limit [NUM_YEARS]
-```
-
----
-
-### JSON Output Mode (for deterministic parsing)
-
-For machine-consumable output, add global `--json` before the subcommand:
-```bash
-bash skills/findata-analyst/run.sh --json facts --ticker MSFT --concept us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax --form 10-K --limit 3
-bash skills/findata-analyst/run.sh --json financials --ticker AAPL --form 10-K --statement income --limit 1
 bash skills/findata-analyst/run.sh --json self-test --ticker AAPL
 ```
 
-### Output Formatting Rules (Mandatory)
+---
 
-For any answer that includes values from `facts`:
-1. Use this sentence pattern:
-   - "As of `YYYY-MM-DD` (`period_end`), `[concept/metric]` was `[numeric_value] [unit]`."
-2. If `year_mismatch=True` appears in any row used in your answer, append:
-   - "Note: filing metadata year (`fiscal_year_raw`) is inconsistent with `period_end`; interpretation is based on `period_end`."
-3. Never aggregate or label years solely by `fiscal_year_raw`.
+## 1) Natural Language Entry (Recommended)
 
-### Forbidden Behaviors (Mandatory)
+For any SEC/EDGAR question, prefer the `ask` command — it auto-routes to the correct subcommand:
 
-- Do NOT present multiple different `period_end` rows as if they belong to the same fiscal year only because `fiscal_year_raw` matches.
-- Do NOT compute YoY/CAGR unless the compared rows are explicitly identified by `period_end`.
-- Do NOT claim accounting policy details unless a `read-item` or `search-text` snippet is shown.
-- Do NOT omit source context; every quantitative claim must include ticker + form + period reference.
+```bash
+bash skills/findata-analyst/run.sh --json ask NVDA gross margin trend
+bash skills/findata-analyst/run.sh --json ask AAPL recent 8-K filings
+bash skills/findata-analyst/run.sh --json ask TSLA insider trading
+bash skills/findata-analyst/run.sh --json ask "NVDA vs AVGO which has higher gross margin"
+bash skills/findata-analyst/run.sh --json ask AMZN depreciation policy
+bash skills/findata-analyst/run.sh --json ask AJG business model
+```
 
-### Minimum Self-Check Before Final Answer
+### What `ask` can detect and route:
+| Question Pattern | Routes To |
+|---|---|
+| "8-K", "corporate event", "earnings release" | `eight-k` |
+| "insider", "form 4", "executive buy/sell" | `insider` |
+| "gross margin", "ROE", "ROA", "profit margin" | `ratios` |
+| "compare", "vs", "versus", two tickers | `compare` |
+| "income statement", "balance sheet", "cash flow" | `financials` |
+| "business model", "what does X do", "Item 1" | `read-item` |
+| "depreciation", "useful life", "accounting policy" | `search-text` |
+| "segment", "revenue by", "breakdown", "xbrl" | `smart-facts` |
+| "revenue", "earnings", "net income", "trend" | `smart-facts` |
 
-Before replying, verify all 4 items:
-1. Correct ticker(s) and form(s) were queried.
-2. Numbers are tied to `period_end` (not only fiscal year labels).
-3. Any `year_mismatch=True` rows are disclosed with a caution note.
-4. Source citation includes command context (e.g., latest 10-K / Form 4 / 8-K snippet).
+If the question doesn't match any pattern but contains a ticker, it falls back to `smart-facts`.
 
-If any item fails, do NOT guess. State what is missing and run another command.
+---
 
-### Qualitative Workflow Examples
+## 2) Full Command Catalog (14 commands)
 
-**User Ask:** "AJG 的商业模式是怎么样的？"
-*Agent Action:* 
-1. Determine that business models are described in "Item 1" of a 10-K.
-2. Run `bash skills/findata-analyst/run.sh read-item --ticker AJG --form 10-K --item "Item 1"`.
-3. Read the output text (which provides the official company description).
-4. Summarize the core business segments, revenue streams, and market position based *strictly* on that text.
+### NL & Utility
+| Command | Use Case | Key Args |
+|---------|----------|----------|
+| `ask` | Natural language router (recommended entry point) | positional: question words |
+| `self-test` | Verify EDGAR connectivity and setup | `--ticker AAPL` (optional) |
 
-**User Ask:** "Amazon 和 Meta 对服务器的折旧年限有什么区别？"
-*Agent Action:*
-1. Depreciation policies are usually buried in the "Notes to Consolidated Financial Statements" inside a 10-K.
-2. Run `bash skills/findata-analyst/run.sh search-text --ticker AMZN --keyword "useful life" --form 10-K`. (If that fails, try keyword "server" or "depreciation"). Read the returned snippet (e.g., "Servers are depreciated over 4 to 5 years...").
-3. Run `bash skills/findata-analyst/run.sh search-text --ticker META --keyword "useful life" --form 10-K`.
-4. Compare the findings and present the exact numbers, citing the latest 10-Ks.
+### Financial Data
+| Command | Use Case | Key Args |
+|---------|----------|----------|
+| `financials` | Full financial statements (income/balance/cash) | `--ticker --form 10-K --statement all\|income\|balance\|cash --limit 1` |
+| `ratios` | Auto-calculated financial ratios from latest filing | `--ticker --form 10-K --limit 1` |
+| `smart-facts` | One-step: auto find best XBRL concept + fetch time series | `--ticker --keyword Revenue --form 10-K --limit 5` |
+| `facts` | Fetch exact XBRL concept time series (need concept ID) | `--ticker --concept us-gaap:Revenue --form 10-K --limit 5` |
+| `search-concepts` | Find available XBRL concept IDs for a ticker | `--ticker --keyword Revenue` |
+| `compare` | Compare a metric across two tickers side-by-side | `--tickers NVDA,AVGO --keyword GrossProfit --form 10-K` |
+
+### Filings & Events
+| Command | Use Case | Key Args |
+|---------|----------|----------|
+| `eight-k` | Recent 8-K events (earnings, material events) | `--ticker --limit 3` |
+| `insider` | Form 4 insider trading filings | `--ticker --limit 5` |
+| `list-filings` | Browse all filings by form type | `--ticker --form 10-K --limit 10` |
+
+### Qualitative Research
+| Command | Use Case | Key Args |
+|---------|----------|----------|
+| `read-item` | Read specific 10-K/10-Q section (max 15K chars) | `--ticker --form 10-K --item "Item 1"` |
+| `search-text` | Keyword search within filing full text | `--ticker --keyword "useful life" --form 10-K --window 500 --max_matches 10` |
+
+### Common Items for `read-item`
+- **Item 1** — Business description / operations overview
+- **Item 1A** — Risk factors
+- **Item 7** — MD&A (Management's Discussion and Analysis)
+- **Item 8** — Financial statements & notes
+
+---
+
+## 3) Output Modes
+
+All commands support `--json` (structured JSON) and `--csv` (for rows-based output):
+```bash
+bash skills/findata-analyst/run.sh --json ratios --ticker AAPL
+bash skills/findata-analyst/run.sh --csv list-filings --ticker AAPL --limit 5
+```
+
+### JSON Output Structure
+Every response follows the same envelope:
+```json
+{"ok": true, "ticker": "AAPL", ...command-specific fields...}
+{"ok": false, "error": "description", "hint": "actionable suggestion"}
+```
+
+### `ratios` returns these metrics (when available):
+- `gross_margin` — Gross Profit / Revenue × 100
+- `operating_margin` — Operating Income / Revenue × 100
+- `net_margin` — Net Income / Revenue × 100
+- `roa` — Net Income / Total Assets × 100
+- `roe` — Net Income / Total Equity × 100
+- `raw` — underlying absolute values (revenue, gross_profit, operating_income, net_income, total_assets, total_equity)
+
+### `smart-facts` returns:
+- `chosen_concept` — the best-matching XBRL concept (prefers non-deprecated, us-gaap)
+- `all_concepts` — top 5 candidate concepts found
+- `rows` — time series with `period_end`, `numeric_value`, `unit`, `year_mismatch`
+
+---
+
+## 4) Facts Interpretation Rule (CRITICAL)
+
+When using `facts` or `smart-facts` output:
+- Anchor metrics to **`period_end`** (source of truth), NOT `fiscal_year_raw`
+- If `year_mismatch=True`, **disclose it** in your answer
+- Pattern: "As of `period_end`, `metric` was `value` `unit`."
+
+---
+
+## 5) Output Formatting for Users
+
+1. **结论/Answer (1-3 lines)** — Direct answer first
+2. **Key Data (bullets)** — Only from command output, with units and periods
+3. **Source (bullet)** — ticker + form type + filing date
+4. **Caveats (if needed)** — year_mismatch, missing data, truncation
+
+⚠️ Never output markdown tables on Discord/WhatsApp; use bullet lists instead.
+
+---
+
+## 6) Features
+
+- **Retry mechanism** — Transient SEC errors (timeout, TLS, rate-limit) auto-retry up to 2× with exponential backoff
+- **Disk cache** — Concepts and facts cached 24h in `scripts/.cache/` to reduce SEC API calls
+- **Error hints** — Failed calls return actionable `hint` field (e.g., "Set EDGAR_IDENTITY", "Use search-concepts first")
+- **Market coverage** — Any US-listed company with SEC EDGAR filings (stocks, ETFs, REITs, BDCs, SPACs)
+
+---
+
+## 7) Workflow Examples
+
+**"NVDA 和 AVGO 哪个毛利率高?"**
+```bash
+bash skills/findata-analyst/run.sh --json compare --tickers NVDA,AVGO --keyword GrossProfit
+```
+
+**"AJG 的商业模式是怎么样的?"**
+```bash
+bash skills/findata-analyst/run.sh --json read-item --ticker AJG --form 10-K --item "Item 1"
+```
+
+**"Amazon 的服务器折旧年限?"**
+```bash
+bash skills/findata-analyst/run.sh --json search-text --ticker AMZN --keyword "useful life" --form 10-K
+```
+
+**"Microsoft 过去三年收入趋势"**
+```bash
+bash skills/findata-analyst/run.sh --json smart-facts --ticker MSFT --keyword Revenue --limit 3
+```
+
+**"Apple 最新一期财务比率"**
+```bash
+bash skills/findata-analyst/run.sh --json ratios --ticker AAPL
+```
+
+**"Tesla 最近有什么 insider 交易?"**
+```bash
+bash skills/findata-analyst/run.sh --json insider --ticker TSLA --limit 5
+```
