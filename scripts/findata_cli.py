@@ -122,6 +122,8 @@ def _cache_set(key, data):
 # NL Router
 # ---------------------------------------------------------------------------
 _NL_PATTERNS = [
+    # Transcript / earnings call
+    (r"(transcript|earnings call|conference call|电话会|业绩会|管理层讲话|earnings.*call)", "transcript"),
     # 8-K / events
     (r"(8-K|8K|recent event|corporate event|earnings release|material event)", "eight-k"),
     # Insider / Form 4
@@ -603,6 +605,44 @@ def cmd_read_item(args):
         return {"ok": False, "error": str(e), **result}
 
 
+def cmd_transcript(args):
+    """Fetch earnings call transcript via roic-transcript skill."""
+    import subprocess
+    skill_path = Path(__file__).resolve().parent.parent.parent / "roic-transcript" / "run.sh"
+    if not skill_path.exists():
+        return {"ok": False, "error": "roic-transcript skill not installed. The 'transcript' command requires it.",
+                "hint": "Install: git clone https://github.com/everflowinv/roic-transcript.git skills/roic-transcript"}
+
+    cmd_parts = ["bash", str(skill_path), "fetch", "--ticker", args.ticker, "--json", "--quiet"]
+
+    if getattr(args, "latest", False) or (not getattr(args, "year", None)):
+        cmd_parts.append("--latest")
+    else:
+        if getattr(args, "year", None):
+            cmd_parts.extend(["--year", str(args.year)])
+        if getattr(args, "quarter", None):
+            cmd_parts.extend(["--quarter", str(args.quarter)])
+
+    if getattr(args, "speaker", None):
+        cmd_parts.extend(["--speaker"] + args.speaker)
+    if getattr(args, "section", None):
+        cmd_parts.extend(["--section", args.section])
+    if getattr(args, "last", None):
+        cmd_parts.extend(["--last", str(args.last)])
+
+    try:
+        result = subprocess.run(cmd_parts, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout)
+        else:
+            err_msg = result.stderr.strip() or result.stdout.strip() or "Unknown error"
+            return {"ok": False, "error": err_msg, "hint": "Check ticker and quarter availability."}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Transcript fetch timed out.", "hint": "Try again or check network."}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "hint": _error_hint(e)}
+
+
 def cmd_ask(args):
     """NL router: parse question → route to appropriate command."""
     question = args.question
@@ -615,7 +655,20 @@ def cmd_ask(args):
 
     ticker = tickers[0]
 
-    if cmd == "eight-k":
+    if cmd == "transcript":
+        # Extract year/quarter from question if present
+        year_match = re.search(r"(20\d{2})", question)
+        q_match = re.search(r"[Qq](\d)", question)
+        ns = argparse.Namespace(
+            ticker=ticker, latest=not (year_match and q_match),
+            year=int(year_match.group(1)) if year_match else None,
+            quarter=int(q_match.group(1)) if q_match else None,
+            speaker=None, section=None, last=None,
+            json=True, csv=False,
+        )
+        return cmd_transcript(ns)
+
+    elif cmd == "eight-k":
         ns = argparse.Namespace(ticker=ticker, limit=3, json=True, csv=False)
         return cmd_eight_k(ns)
 
@@ -826,6 +879,17 @@ def main():
     p.add_argument("--item", required=True)
     p.add_argument("--max_chars", type=int, default=15000)
     p.set_defaults(func=cmd_read_item)
+
+    # transcript (via roic-transcript)
+    p = sub.add_parser("transcript")
+    p.add_argument("--ticker", required=True)
+    p.add_argument("--year", type=int)
+    p.add_argument("--quarter", type=int, choices=[1, 2, 3, 4])
+    p.add_argument("--latest", action="store_true", help="Fetch most recent transcript")
+    p.add_argument("--last", type=int, metavar="N", help="Fetch last N transcripts")
+    p.add_argument("--speaker", nargs="+", help="Filter by speaker name(s)")
+    p.add_argument("--section", choices=["prepared", "qa"], help="Filter prepared remarks or Q&A")
+    p.set_defaults(func=cmd_transcript)
 
     # self-test
     p = sub.add_parser("self-test")

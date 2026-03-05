@@ -14,6 +14,18 @@ export EDGAR_IDENTITY="Your Name <your.email@example.com>"  # Required by SEC
 ```
 First run auto-creates venv and installs dependencies.
 
+## Dependencies
+
+### Required
+- **edgartools** (auto-installed via `requirements.txt`)
+- **SEC EDGAR access** (set `EDGAR_IDENTITY` env var)
+
+### Optional (for `transcript` command)
+- **roic-transcript** skill — Earnings call transcript fetching
+  - Location: must be at `skills/roic-transcript/` (sibling directory)
+  - Install: `git clone https://github.com/everflowinv/roic-transcript.git skills/roic-transcript`
+  - Without it: all commands work **except** `transcript` and NL queries matching "earnings call" / "transcript"
+
 ---
 
 ## 0) Preflight
@@ -39,6 +51,7 @@ bash skills/findata-analyst/run.sh --json ask AJG business model
 ### What `ask` can detect and route:
 | Question Pattern | Routes To |
 |---|---|
+| "transcript", "earnings call", "conference call" | `transcript` |
 | "8-K", "corporate event", "earnings release" | `eight-k` |
 | "insider", "form 4", "executive buy/sell" | `insider` |
 | "gross margin", "ROE", "ROA", "profit margin" | `ratios` |
@@ -81,6 +94,7 @@ If the question doesn't match any pattern but contains a ticker, it falls back t
 ### Qualitative Research
 | Command | Use Case | Key Args |
 |---------|----------|----------|
+| `transcript` | Earnings call transcript (via roic.ai) | `--ticker --latest` or `--ticker --year 2025 --quarter 4` |
 | `read-item` | Read specific 10-K/10-Q section (max 15K chars) | `--ticker --form 10-K --item "Item 1"` |
 | `search-text` | Keyword search within filing full text | `--ticker --keyword "useful life" --form 10-K --window 500 --max_matches 10` |
 
@@ -181,4 +195,14 @@ bash skills/findata-analyst/run.sh --json ratios --ticker AAPL
 **"Tesla 最近有什么 insider 交易?"**
 ```bash
 bash skills/findata-analyst/run.sh --json insider --ticker TSLA --limit 5
+```
+
+**"AAPL 最新 earnings call transcript"**
+```bash
+bash skills/findata-analyst/run.sh --json transcript --ticker AAPL --latest
+```
+
+**"SE Q4 2025 管理层发言"**
+```bash
+bash skills/findata-analyst/run.sh --json transcript --ticker SE --year 2025 --quarter 4 --section prepared
 ```
