@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""findata-analyst CLI v2 — SEC EDGAR data with NL routing, caching, and structured output."""
+"""findata-analyst CLI v2.1 — SEC EDGAR data with NL routing, caching, yfinance fallback, and structured output."""
 import argparse
 import hashlib
 import json
@@ -10,6 +10,13 @@ import time
 from pathlib import Path
 
 import pandas as pd
+
+# yfinance fallback availability
+try:
+    import yfinance as yf
+    HAS_YFINANCE = True
+except ImportError:
+    HAS_YFINANCE = False
 
 # ---------------------------------------------------------------------------
 # Edgar setup
@@ -175,11 +182,99 @@ def _route_nl(question: str) -> tuple[str, dict]:
 # Commands
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# yfinance fallback helpers
+# ---------------------------------------------------------------------------
+def _yf_financials(ticker: str, form: str = "10-K") -> dict:
+    """Fetch financials from yfinance as fallback."""
+    if not HAS_YFINANCE:
+        return {"ok": False, "error": "yfinance not installed", "hint": "pip install yfinance"}
+    
+    t = yf.Ticker(ticker)
+    period = "annual" if "K" in form or "20-F" in form else "quarterly"
+    
+    statements = {}
+    try:
+        if period == "annual":
+            inc = t.income_stmt
+            bal = t.balance_sheet
+            cf = t.cashflow
+        else:
+            inc = t.quarterly_income_stmt
+            bal = t.quarterly_balance_sheet
+            cf = t.quarterly_cashflow
+        
+        if inc is not None and not inc.empty:
+            statements["income"] = inc.to_dict()
+        if bal is not None and not bal.empty:
+            statements["balance"] = bal.to_dict()
+        if cf is not None and not cf.empty:
+            statements["cash"] = cf.to_dict()
+    except Exception as e:
+        return {"ok": False, "error": f"yfinance fetch failed: {e}"}
+    
+    if not statements:
+        return {"ok": False, "error": f"yfinance: no financial data for {ticker}"}
+    
+    return {
+        "ok": True, "ticker": ticker, "form": form, "source": "yfinance",
+        "fallback_used": True,
+        "rows": [{"form": form, "filing_date": "yfinance", "statements": statements}],
+    }
+
+
+def _yf_ratios(ticker: str) -> dict:
+    """Calculate ratios from yfinance as fallback."""
+    if not HAS_YFINANCE:
+        return {"ok": False, "error": "yfinance not installed"}
+    
+    t = yf.Ticker(ticker)
+    info = t.info or {}
+    
+    ratios = {
+        "filing_date": "yfinance-latest",
+        "source": "yfinance",
+    }
+    
+    # Extract ratios from yfinance info
+    mappings = {
+        "gross_margin": ("grossMargins", 100),
+        "operating_margin": ("operatingMargins", 100),
+        "net_margin": ("profitMargins", 100),
+        "roe": ("returnOnEquity", 100),
+        "roa": ("returnOnAssets", 100),
+    }
+    for key, (yf_key, mult) in mappings.items():
+        val = info.get(yf_key)
+        if val is not None:
+            ratios[key] = round(val * mult, 2)
+    
+    raw_mappings = {
+        "revenue": "totalRevenue",
+        "gross_profit": "grossProfits",
+        "net_income": "netIncomeToCommon",
+        "total_assets": "totalAssets",
+        "total_equity": "bookValue",  # per share, not total
+    }
+    raw = {}
+    for key, yf_key in raw_mappings.items():
+        raw[key] = info.get(yf_key)
+    ratios["raw"] = raw
+    
+    return {"ok": True, "ticker": ticker, "source": "yfinance", "fallback_used": True, "ratios": [ratios]}
+
+
 def cmd_financials(args):
     c = _retry(lambda: Company(args.ticker))
     filings = _retry(lambda: c.get_filings(form=args.form))
     if len(filings) == 0:
-        return {"ok": False, "error": f"No {args.form} filings found for {args.ticker}."}
+        # Fallback to yfinance if SEC has no filings
+        if HAS_YFINANCE:
+            yf_result = _yf_financials(args.ticker, args.form)
+            if yf_result.get("ok"):
+                return yf_result
+        return {"ok": False, "error": f"No {args.form} filings found for {args.ticker}.",
+                "hint": "yfinance fallback also unavailable" if not HAS_YFINANCE else "yfinance fallback also failed"}
 
     rows = []
     for f in filings.head(args.limit):
@@ -206,8 +301,16 @@ def cmd_financials(args):
             rows.append(row)
         except Exception as e:
             rows.append({"form": str(f.form), "filing_date": str(f.filing_date), "error": str(e)})
-            continue  # ← FIXED: was return
-    return {"ok": True, "ticker": args.ticker, "form": args.form, "rows": rows}
+            continue
+    
+    # If all rows errored, try yfinance fallback
+    if rows and all("error" in r for r in rows) and HAS_YFINANCE:
+        yf_result = _yf_financials(args.ticker, args.form)
+        if yf_result.get("ok"):
+            yf_result["edgar_errors"] = [r.get("error") for r in rows]
+            return yf_result
+    
+    return {"ok": True, "ticker": args.ticker, "form": args.form, "rows": rows, "source": "sec_edgar"}
 
 
 def cmd_search_concepts(args):
@@ -383,10 +486,25 @@ def cmd_compare(args):
 
 
 def cmd_ratios(args):
-    """Calculate common financial ratios from latest filing."""
-    c = _retry(lambda: Company(args.ticker))
-    filings = _retry(lambda: c.get_filings(form=args.form))
+    """Calculate common financial ratios from latest filing, with yfinance fallback."""
+    try:
+        c = _retry(lambda: Company(args.ticker))
+        filings = _retry(lambda: c.get_filings(form=args.form))
+    except Exception as e:
+        # SEC failed entirely — try yfinance
+        if HAS_YFINANCE:
+            yf_result = _yf_ratios(args.ticker)
+            if yf_result.get("ok"):
+                yf_result["edgar_error"] = str(e)
+                return yf_result
+        return {"ok": False, "error": str(e), "hint": _error_hint(str(e))}
+    
     if len(filings) == 0:
+        # No filings — try yfinance
+        if HAS_YFINANCE:
+            yf_result = _yf_ratios(args.ticker)
+            if yf_result.get("ok"):
+                return yf_result
         return {"ok": False, "error": f"No {args.form} filings found for {args.ticker}."}
 
     ratios_list = []
